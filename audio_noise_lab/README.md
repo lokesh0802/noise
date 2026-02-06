@@ -189,6 +189,57 @@ H(f) = |S(f)|² / (|S(f)|² + |N(f)|²) = SNR(f) / (1 + SNR(f))
 - May introduce artifacts on out-of-distribution audio
 - Fixed 8kHz sample rate (internal resampling applied)
 
+### 6. RNNoise (Xiph.org)
+
+**Theory:** RNNoise uses a hybrid approach combining classical DSP with recurrent neural networks for real-time noise suppression.
+
+**Architecture:**
+- **Feature Extraction:** 22 Bark-scale frequency bands + pitch features
+- **GRU Network:** Three GRU layers (24, 48, 96 units) for temporal context
+- **Gain Prediction:** Network outputs per-band gains (0 to 1)
+- **Pitch Filtering:** Comb filter for pitch period enhancement
+
+**Key Advantages:**
+- Extremely low latency (~10ms frame size)
+- Minimal CPU usage (designed for real-time VoIP)
+- No voice activity detection required
+- Works well across many noise types
+
+**When to use:**
+- Real-time applications (VoIP, streaming)
+- When latency is critical
+- Resource-constrained environments
+- General-purpose noise suppression
+
+**Installation:**
+
+RNNoise requires building from source as no reliable PyPI packages exist:
+
+```bash
+# macOS/Linux
+git clone https://github.com/xiph/rnnoise.git
+cd rnnoise
+./autogen.sh
+./configure
+make
+sudo make install
+
+# Then install Python bindings (if available)
+pip install rnnoise
+```
+
+For Python bindings, you may need to build a wrapper or use ctypes to interface
+with the compiled library. See the RNNoise repository for details.
+
+**Limitations:**
+- Requires native library compilation (platform-dependent)
+- May not be available on all systems (especially Windows)
+- Fixed 48kHz internal processing rate
+- Less effective on very low SNR signals
+- Cannot handle music (speech-only training)
+
+**Reference:** Valin, J.M. (2018). "A Hybrid DSP/Deep Learning Approach to Real-Time Full-Band Speech Enhancement." https://arxiv.org/abs/1709.08243
+
 ## Audio Quality Metrics
 
 ### SNR (Signal-to-Noise Ratio)
@@ -385,6 +436,7 @@ plt.savefig("analysis.png", dpi=150)
 6. **Platform-specific:**
    - MP3 support requires FFmpeg installation
    - Some deep learning operations may not work on Apple Silicon without Rosetta
+   - RNNoise requires native library compilation (may not work on Windows)
 
 ## References
 
@@ -395,7 +447,9 @@ plt.savefig("analysis.png", dpi=150)
 
 ### Deep Learning
 - Subakan, C., et al. (2021). Attention is all you need in speech separation. *ICASSP*
+- Valin, J.M. (2018). A Hybrid DSP/Deep Learning Approach to Real-Time Full-Band Speech Enhancement. *arXiv:1709.08243*
 - SpeechBrain: A General-Purpose Speech Toolkit. https://speechbrain.github.io/
+- RNNoise: https://github.com/xiph/rnnoise
 
 ### Metrics
 - ITU-T P.862 (2001). Perceptual evaluation of speech quality (PESQ)

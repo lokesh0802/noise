@@ -15,6 +15,7 @@ from .noisereduce_wrapper import (
     noisereduce_nonstationary,
 )
 from .deep_model import deep_denoise, get_deep_model_status
+from .rnnoise import rnnoise_suppress, is_rnnoise_available, get_rnnoise_status
 
 # Registry of all available suppressors
 SUPPRESSORS = {
@@ -72,6 +73,12 @@ SUPPRESSORS = {
         "description": "Neural network-based denoising",
         "category": "deep_learning",
     },
+    "rnnoise": {
+        "name": "RNNoise (Xiph.org)",
+        "func": rnnoise_suppress,
+        "description": "Real-time RNN-based noise suppression",
+        "category": "deep_learning",
+    },
 }
 
 __all__ = [
@@ -86,5 +93,8 @@ __all__ = [
     "noisereduce_nonstationary",
     "deep_denoise",
     "get_deep_model_status",
+    "rnnoise_suppress",
+    "is_rnnoise_available",
+    "get_rnnoise_status",
     "SUPPRESSORS",
 ]

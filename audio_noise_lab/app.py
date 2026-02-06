@@ -133,11 +133,15 @@ def get_available_suppressors() -> Dict[str, dict]:
     except ImportError:
         torch_available = False
     
-    try:
-        import speechbrain
-        sb_available = True
-    except ImportError:
-        sb_available = False
+    sb_available = False
+    if torch_available:
+        try:
+            # SpeechBrain may fail on import due to torchaudio backend issues
+            import speechbrain
+            sb_available = True
+        except (ImportError, OSError, RuntimeError, Exception) as e:
+            # Catch any error during speechbrain import
+            sb_available = False
     
     dl_available = torch_available and sb_available
     
@@ -147,6 +151,48 @@ def get_available_suppressors() -> Dict[str, dict]:
         "available": dl_available,
         "category": "Deep Learning",
         "install_hint": "pip install torch speechbrain" if not dl_available else None,
+    }
+    
+    # Check RNNoise availability
+    try:
+        from suppressors.rnnoise import is_rnnoise_available, is_fallback_available, get_rnnoise_status
+        rnnoise_native = is_rnnoise_available()
+        rnnoise_fallback = is_fallback_available()
+        rnnoise_available = rnnoise_native or rnnoise_fallback
+    except ImportError:
+        rnnoise_native = False
+        rnnoise_fallback = False
+        rnnoise_available = False
+    
+    # Determine the appropriate description based on what's available
+    if rnnoise_native:
+        rnnoise_desc = "Real-time RNN-based noise suppression (native library)"
+        rnnoise_hint = None
+    elif rnnoise_fallback:
+        rnnoise_desc = "RNNoise-style noise suppression (scipy fallback mode)"
+        rnnoise_hint = (
+            "💡 Using scipy-based fallback (no native RNNoise found)\n"
+            "For full RNNoise, install native library:\n"
+            "• macOS: brew install xiph/xiph/rnnoise\n"
+            "• Linux: Build from source (github.com/xiph/rnnoise)"
+        )
+    else:
+        rnnoise_desc = "Real-time RNN-based noise suppression (low latency)"
+        rnnoise_hint = (
+            "⚠️ Advanced - Requires native C library installation\n"
+            "• macOS: brew install xiph/xiph/rnnoise\n"
+            "• Linux: Build from source (github.com/xiph/rnnoise)\n"
+            "• Then install Python wrapper\n"
+            "💡 Tip: Use Deep Learning (SpeechBrain) instead - works out of the box!"
+        )
+    
+    suppressors["rnnoise"] = {
+        "name": "RNNoise (Xiph.org)" + (" [Fallback]" if rnnoise_fallback and not rnnoise_native else ""),
+        "description": rnnoise_desc,
+        "available": rnnoise_available,
+        "category": "Deep Learning",
+        "install_hint": rnnoise_hint,
+        "is_fallback": rnnoise_fallback and not rnnoise_native,
     }
     
     return suppressors
@@ -193,6 +239,11 @@ def run_suppressor(
         elif suppressor_key == "deep_learning":
             from suppressors.deep_model import deep_denoise
             func = deep_denoise
+        elif suppressor_key == "rnnoise":
+            from suppressors.rnnoise import rnnoise_suppress, is_rnnoise_available
+            # Use fallback mode if native RNNoise not available
+            use_fallback = not is_rnnoise_available()
+            func = lambda audio, sr: rnnoise_suppress(audio, sr, use_fallback=use_fallback)
         else:
             func = suppressor_funcs.get(suppressor_key)
         
@@ -328,10 +379,14 @@ def render_audio_player(
     audio: np.ndarray,
     sample_rate: int,
     label: str,
+    key_prefix: str = "",
 ) -> None:
     """Render audio player with download button."""
     # Convert to bytes for playback
     audio_bytes = save_audio(audio, sample_rate)
+    
+    # Generate unique key from label
+    unique_key = f"{key_prefix}_{label.lower().replace(' ', '_').replace('(', '').replace(')', '')}"
     
     st.audio(audio_bytes, format="audio/wav")
     
@@ -340,6 +395,7 @@ def render_audio_player(
         data=audio_bytes,
         file_name=f"{label.lower().replace(' ', '_')}.wav",
         mime="audio/wav",
+        key=f"download_{unique_key}",
     )
 
 
@@ -395,7 +451,7 @@ def render_detailed_results(
             
             with col1:
                 st.markdown("**Audio Playback**")
-                render_audio_player(result.processed_audio, sample_rate, display_name)
+                render_audio_player(result.processed_audio, sample_rate, display_name, key_prefix="detailed")
                 
                 st.markdown("**Metrics**")
                 metrics_dict = result.metrics.to_dict()
@@ -471,7 +527,7 @@ def render_main_content(
         
         # Show original audio preview
         st.subheader("Original Audio Preview")
-        render_audio_player(audio_data.samples, audio_data.sample_rate, "Original")
+        render_audio_player(audio_data.samples, audio_data.sample_rate, "Original", key_prefix="preview")
         return
     
     # Run analysis
@@ -520,6 +576,7 @@ def render_main_content(
                 audio_data.samples,
                 audio_data.sample_rate,
                 "Original",
+                key_prefix="tab1",
             )
         
         # Processed audio in columns
@@ -537,6 +594,7 @@ def render_main_content(
                         result.processed_audio,
                         audio_data.sample_rate,
                         display_name,
+                        key_prefix="tab1",
                     )
         
         # Show errors if any
@@ -644,6 +702,20 @@ def render_main_content(
             **Deep Learning** uses SpeechBrain's SepFormer model trained on
             speech enhancement datasets. Provides state-of-the-art performance
             but requires more computation.
+            """,
+            "rnnoise": """
+            **RNNoise** is a hybrid DSP/deep learning approach from Xiph.org
+            using GRU networks for real-time noise suppression. Extremely low
+            latency (~10ms) and CPU-efficient.
+            
+            When native RNNoise library is unavailable, a scipy-based fallback
+            implementation is used that applies similar noise reduction using:
+            - High-pass filtering (removes low-frequency noise/hum)
+            - Low-pass filtering (removes high-frequency hiss)  
+            - Spectral subtraction (reduces broadband noise)
+            - Wiener filtering (smooths spectral artifacts)
+            
+            Based on approach from [Agent-Stream](https://github.com/exotel/Agent-Stream).
             """,
         }
         

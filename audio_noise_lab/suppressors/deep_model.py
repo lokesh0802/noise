@@ -61,6 +61,8 @@ def _check_speechbrain_available() -> Tuple[bool, Optional[str]]:
         return True, None
     except ImportError:
         return False, "SpeechBrain not installed. Install with: pip install speechbrain"
+    except Exception as e:
+        return False, f"SpeechBrain import failed: {str(e)}. Try: pip install --upgrade torchaudio speechbrain"
 
 
 def _load_speechbrain_model() -> Tuple[Any, Optional[str]]:
