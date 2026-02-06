@@ -12,7 +12,7 @@ from typing import Optional, Tuple, Union
 
 import numpy as np
 import soundfile as sf
-from scipy import signal
+import librosa
 
 
 @dataclass
@@ -232,10 +232,10 @@ def resample_audio(
     target_sr: int,
 ) -> np.ndarray:
     """
-    Resample audio to target sample rate using polyphase filtering.
+    Resample audio to target sample rate using high-quality resampling.
     
-    Uses scipy.signal.resample_poly for high-quality resampling
-    with anti-aliasing.
+    Uses librosa.resample which provides kaiser_best quality by default,
+    offering excellent anti-aliasing with minimal artifacts.
     
     Parameters
     ----------
@@ -254,23 +254,25 @@ def resample_audio(
     if original_sr == target_sr:
         return samples
     
-    # Find GCD to minimize filter length
-    from math import gcd
-    g = gcd(original_sr, target_sr)
-    up = target_sr // g
-    down = original_sr // g
-    
     # Apply resampling to each channel if stereo
     if samples.ndim == 1:
-        return signal.resample_poly(samples, up, down)
-    else:
-        resampled = np.zeros(
-            (int(len(samples) * target_sr / original_sr), samples.shape[1]),
-            dtype=samples.dtype
+        return librosa.resample(
+            samples, 
+            orig_sr=original_sr, 
+            target_sr=target_sr,
+            res_type='kaiser_best'
         )
+    else:
+        resampled_channels = []
         for ch in range(samples.shape[1]):
-            resampled[:, ch] = signal.resample_poly(samples[:, ch], up, down)
-        return resampled
+            resampled_ch = librosa.resample(
+                samples[:, ch],
+                orig_sr=original_sr,
+                target_sr=target_sr,
+                res_type='kaiser_best'
+            )
+            resampled_channels.append(resampled_ch)
+        return np.column_stack(resampled_channels)
 
 
 def to_mono(samples: np.ndarray) -> np.ndarray:

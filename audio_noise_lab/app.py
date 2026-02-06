@@ -29,6 +29,13 @@ from analysis.plots import (
     plot_metrics_comparison,
     figure_to_bytes,
 )
+from suppressors.pipeline import (
+    get_predefined_pipelines,
+    run_pipeline,
+    create_custom_pipeline,
+    get_pipeline_description,
+    Pipeline,
+)
 
 # Suppress warnings in UI
 warnings.filterwarnings('ignore')
@@ -292,8 +299,83 @@ def run_suppressor(
         )
 
 
-def render_sidebar() -> Tuple[Optional[AudioData], List[str]]:
-    """Render sidebar with upload and suppressor selection."""
+def run_pipeline_processor(
+    pipeline: Pipeline,
+    audio: np.ndarray,
+    sample_rate: int,
+) -> SuppressorResult:
+    """
+    Run a processing pipeline and return results.
+    """
+    timer = Timer()
+    
+    try:
+        # Import suppressors
+        from suppressors.spectral_gate import spectral_gate, spectral_gate_adaptive
+        from suppressors.wiener import wiener_filter, wiener_filter_adaptive
+        from suppressors.bandpass import bandpass_filter, highpass_filter
+        
+        # Map keys to functions
+        processor_funcs = {
+            "spectral_gate": spectral_gate,
+            "spectral_gate_adaptive": spectral_gate_adaptive,
+            "wiener": wiener_filter,
+            "wiener_adaptive": wiener_filter_adaptive,
+            "bandpass": bandpass_filter,
+            "highpass": highpass_filter,
+        }
+        
+        # Try to add noisereduce
+        try:
+            from suppressors.noisereduce_wrapper import (
+                noisereduce_stationary,
+                noisereduce_nonstationary,
+            )
+            processor_funcs["noisereduce_stationary"] = noisereduce_stationary
+            processor_funcs["noisereduce_nonstationary"] = noisereduce_nonstationary
+        except ImportError:
+            pass
+        
+        # Run pipeline with timing
+        with timer:
+            processed, stage_descriptions = run_pipeline(
+                pipeline,
+                audio.copy(),
+                sample_rate,
+                processor_funcs,
+            )
+        
+        # Ensure output is valid
+        if processed is None or len(processed) == 0:
+            raise ValueError("Pipeline returned empty output")
+        
+        # Compute metrics
+        metrics = compute_all_metrics(
+            audio,
+            processed,
+            sample_rate,
+            processing_time_ms=timer.elapsed_ms,
+        )
+        
+        return SuppressorResult(
+            name=pipeline.name,
+            processed_audio=processed,
+            metrics=metrics,
+            success=True,
+        )
+        
+    except Exception as e:
+        return SuppressorResult(
+            name=pipeline.name,
+            processed_audio=audio.copy(),
+            metrics=MetricsResult(0, 0, 0, 0, 0),
+            success=False,
+            error_message=str(e),
+        )
+
+
+def render_sidebar() -> Tuple[Optional[AudioData], List[str], List[Pipeline]]:
+    """Render sidebar with upload, suppressor, and pipeline selection."""
     st.sidebar.title("Audio Noise Lab")
     st.sidebar.markdown("---")
     
@@ -328,43 +410,116 @@ def render_sidebar() -> Tuple[Optional[AudioData], List[str]]:
     st.sidebar.markdown("---")
     
     # Suppressor selection
-    st.sidebar.subheader("2. Select Suppressors")
+    st.sidebar.subheader("2. Select Processing")
     
-    available_suppressors = get_available_suppressors()
+    # Mode selection
+    mode = st.sidebar.radio(
+        "Processing Mode",
+        ["Individual Suppressors", "Pipelines (Combinations)", "Custom Pipeline"],
+        help="Choose between testing individual methods or combinations",
+    )
+    
     selected = []
+    selected_pipelines = []
     
-    # Group by category
-    categories = {}
-    for key, info in available_suppressors.items():
-        cat = info["category"]
-        if cat not in categories:
-            categories[cat] = []
-        categories[cat].append((key, info))
+    if mode == "Individual Suppressors":
+        available_suppressors = get_available_suppressors()
+        
+        # Group by category
+        categories = {}
+        for key, info in available_suppressors.items():
+            cat = info["category"]
+            if cat not in categories:
+                categories[cat] = []
+            categories[cat].append((key, info))
+        
+        for category, items in categories.items():
+            st.sidebar.markdown(f"**{category}**")
+            for key, info in items:
+                disabled = not info["available"]
+                label = info["name"]
+                if disabled:
+                    label += " (unavailable)"
+                
+                if st.sidebar.checkbox(
+                    label,
+                    value=False,
+                    disabled=disabled,
+                    help=info.get("install_hint") or info["description"],
+                    key=f"cb_{key}",
+                ):
+                    selected.append(key)
     
-    for category, items in categories.items():
-        st.sidebar.markdown(f"**{category}**")
-        for key, info in items:
-            disabled = not info["available"]
-            label = info["name"]
-            if disabled:
-                label += " (unavailable)"
+    elif mode == "Pipelines (Combinations)":
+        pipelines = get_predefined_pipelines()
+        
+        # Group by category
+        categories = {}
+        for key, pipeline in pipelines.items():
+            cat = pipeline.category
+            if cat not in categories:
+                categories[cat] = []
+            categories[cat].append((key, pipeline))
+        
+        for category, items in categories.items():
+            st.sidebar.markdown(f"**{category}**")
+            for key, pipeline in items:
+                stages_preview = " → ".join([s.name for s in pipeline.stages[:2]])
+                if len(pipeline.stages) > 2:
+                    stages_preview += "..."
+                
+                if st.sidebar.checkbox(
+                    pipeline.name,
+                    value=False,
+                    help=f"{stages_preview}\n\n{pipeline.description}",
+                    key=f"pipe_{key}",
+                ):
+                    selected_pipelines.append(pipeline)
+    
+    else:  # Custom Pipeline
+        st.sidebar.markdown("**Build Your Pipeline**")
+        available_suppressors = get_available_suppressors()
+        
+        # Filter to available suppressors
+        available_keys = [k for k, v in available_suppressors.items() if v["available"]]
+        
+        # Multi-select for pipeline stages
+        custom_stages = st.sidebar.multiselect(
+            "Select stages in order",
+            options=available_keys,
+            format_func=lambda x: available_suppressors[x]["name"],
+            help="Processors will be applied in the order selected",
+            key="custom_pipeline_stages",
+        )
+        
+        if custom_stages:
+            custom_name = st.sidebar.text_input(
+                "Pipeline Name",
+                value="Custom Pipeline",
+                key="custom_pipeline_name",
+            )
             
-            if st.sidebar.checkbox(
-                label,
-                value=False,
-                disabled=disabled,
-                help=info.get("install_hint") or info["description"],
-                key=f"cb_{key}",
-            ):
-                selected.append(key)
+            # Show preview
+            st.sidebar.markdown("**Pipeline Preview:**")
+            stage_names = [available_suppressors[k]["name"] for k in custom_stages]
+            st.sidebar.caption(" → ".join(stage_names))
+            
+            # Create pipeline
+            custom_pipeline = create_custom_pipeline(
+                custom_name,
+                f"Custom pipeline with {len(custom_stages)} stages",
+                custom_stages,
+            )
+            selected_pipelines.append(custom_pipeline)
     
     st.sidebar.markdown("---")
     
     # Run button
+    has_selection = len(selected) > 0 or len(selected_pipelines) > 0
     if st.sidebar.button(
         "Run Analysis",
         type="primary",
-        disabled=(audio_data is None or len(selected) == 0),
+        disabled=(audio_data is None or not has_selection),
         use_container_width=True,
     ):
         st.session_state["run_analysis"] = True
@@ -372,7 +527,7 @@ def render_sidebar() -> Tuple[Optional[AudioData], List[str]]:
         if "run_analysis" not in st.session_state:
             st.session_state["run_analysis"] = False
     
-    return audio_data, selected
+    return audio_data, selected, selected_pipelines
 
 
 def render_audio_player(
@@ -389,6 +544,9 @@ def render_audio_player(
     unique_key = f"{key_prefix}_{label.lower().replace(' ', '_').replace('(', '').replace(')', '')}"
     
     st.audio(audio_bytes, format="audio/wav")
+    
+    # Create unique key for download button
+    button_key = f"download_{label.lower().replace(' ', '_')}_{key_suffix}" if key_suffix else f"download_{label.lower().replace(' ', '_')}"
     
     st.download_button(
         label=f"Download {label}",
@@ -437,10 +595,17 @@ def render_detailed_results(
     sample_rate: int,
     results: Dict[str, SuppressorResult],
 ) -> None:
-    """Render detailed results for each suppressor."""
+    """Render detailed results for each suppressor and pipeline."""
     for key, result in results.items():
-        suppressor_info = get_available_suppressors().get(key, {})
-        display_name = suppressor_info.get("name", key)
+        # Determine display name based on key prefix
+        if key.startswith("single_"):
+            actual_key = key.replace("single_", "")
+            suppressor_info = get_available_suppressors().get(actual_key, {})
+            display_name = suppressor_info.get("name", actual_key)
+        elif key.startswith("pipeline_"):
+            display_name = result.name  # Use pipeline name from result
+        else:
+            display_name = result.name
         
         with st.expander(f"{display_name}", expanded=False):
             if not result.success:
@@ -480,6 +645,7 @@ def render_detailed_results(
 def render_main_content(
     audio_data: Optional[AudioData],
     selected_suppressors: List[str],
+    selected_pipelines: List[Pipeline],
 ) -> None:
     """Render main content area with tabs."""
     st.title("Audio Noise Suppression Benchmarking")
@@ -518,8 +684,8 @@ def render_main_content(
         
         return
     
-    if not selected_suppressors:
-        st.warning("Select at least one suppressor from the sidebar.")
+    if not selected_suppressors and not selected_pipelines:
+        st.warning("Select at least one suppressor or pipeline from the sidebar.")
         return
     
     if not st.session_state.get("run_analysis", False):
@@ -533,10 +699,13 @@ def render_main_content(
     # Run analysis
     results: Dict[str, SuppressorResult] = {}
     
+    total_items = len(selected_suppressors) + len(selected_pipelines)
     progress_bar = st.progress(0, text="Processing...")
     status_text = st.empty()
+    current_idx = 0
     
-    for i, suppressor_key in enumerate(selected_suppressors):
+    # Run individual suppressors
+    for suppressor_key in selected_suppressors:
         suppressor_info = get_available_suppressors().get(suppressor_key, {})
         display_name = suppressor_info.get("name", suppressor_key)
         
@@ -547,9 +716,24 @@ def render_main_content(
             audio_data.samples,
             audio_data.sample_rate,
         )
-        results[suppressor_key] = result
+        results[f"single_{suppressor_key}"] = result
         
-        progress_bar.progress((i + 1) / len(selected_suppressors))
+        current_idx += 1
+        progress_bar.progress(current_idx / total_items)
+    
+    # Run pipelines
+    for pipeline in selected_pipelines:
+        status_text.text(f"Running {pipeline.name}...")
+        
+        result = run_pipeline_processor(
+            pipeline,
+            audio_data.samples,
+            audio_data.sample_rate,
+        )
+        results[f"pipeline_{pipeline.name}"] = result
+        
+        current_idx += 1
+        progress_bar.progress(current_idx / total_items)
     
     progress_bar.empty()
     status_text.empty()
@@ -585,8 +769,15 @@ def render_main_content(
         if successful_results:
             cols = st.columns(min(len(successful_results), 3))
             for i, (key, result) in enumerate(successful_results.items()):
-                suppressor_info = get_available_suppressors().get(key, {})
-                display_name = suppressor_info.get("name", key)
+                # Determine display name
+                if key.startswith("single_"):
+                    actual_key = key.replace("single_", "")
+                    suppressor_info = get_available_suppressors().get(actual_key, {})
+                    display_name = suppressor_info.get("name", actual_key)
+                elif key.startswith("pipeline_"):
+                    display_name = result.name
+                else:
+                    display_name = result.name
                 
                 with cols[i % 3]:
                     st.markdown(f"**{display_name}**")
@@ -733,16 +924,16 @@ def main():
         st.session_state["run_analysis"] = False
     
     # Render sidebar
-    audio_data, selected_suppressors = render_sidebar()
+    audio_data, selected_suppressors, selected_pipelines = render_sidebar()
     
     # Render main content
-    render_main_content(audio_data, selected_suppressors)
+    render_main_content(audio_data, selected_suppressors, selected_pipelines)
     
     # Footer
     st.sidebar.markdown("---")
     st.sidebar.caption(
         "Audio Noise Lab v1.0 | "
-        "[Documentation](https://github.com/example/audio-noise-lab)"
+        "Pipelines: Combine filters + suppressors for optimal results"
     )
 
 

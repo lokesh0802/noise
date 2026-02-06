@@ -22,11 +22,13 @@ Key properties:
 - Preserves phase information
 - Can introduce musical noise if not smoothed
 - Requires accurate noise PSD estimation
+
+Uses librosa for optimized STFT/ISTFT operations.
 """
 
 import numpy as np
 from typing import Tuple, Optional
-from scipy import signal as scipy_signal
+import librosa
 
 
 def _compute_stft(
@@ -36,28 +38,23 @@ def _compute_stft(
     window: str = "hann",
 ) -> Tuple[np.ndarray, int]:
     """
-    Compute STFT using scipy for consistency.
+    Compute STFT using librosa for better performance.
     
     Returns
     -------
     Tuple[np.ndarray, int]
         Complex STFT matrix (freq x time) and number of frequency bins
     """
-    if window == "hann":
-        win = scipy_signal.windows.hann(n_fft, sym=False)
-    else:
-        win = scipy_signal.windows.hamming(n_fft, sym=False)
-    
-    # Use scipy's stft
-    f, t, stft_matrix = scipy_signal.stft(
+    # Use librosa's optimized STFT
+    stft_matrix = librosa.stft(
         audio,
-        nperseg=n_fft,
-        noverlap=n_fft - hop_length,
-        window=win,
-        return_onesided=True,
+        n_fft=n_fft,
+        hop_length=hop_length,
+        window=window,
+        center=True,
     )
     
-    return stft_matrix, len(f)
+    return stft_matrix, stft_matrix.shape[0]
 
 
 def _compute_istft(
@@ -67,24 +64,15 @@ def _compute_istft(
     window: str = "hann",
     original_length: Optional[int] = None,
 ) -> np.ndarray:
-    """Compute inverse STFT using scipy."""
-    if window == "hann":
-        win = scipy_signal.windows.hann(n_fft, sym=False)
-    else:
-        win = scipy_signal.windows.hamming(n_fft, sym=False)
-    
-    _, audio = scipy_signal.istft(
+    """Compute inverse STFT using librosa."""
+    audio = librosa.istft(
         stft_matrix,
-        nperseg=n_fft,
-        noverlap=n_fft - hop_length,
-        window=win,
+        hop_length=hop_length,
+        n_fft=n_fft,
+        window=window,
+        center=True,
+        length=original_length,
     )
-    
-    if original_length is not None:
-        if len(audio) > original_length:
-            audio = audio[:original_length]
-        elif len(audio) < original_length:
-            audio = np.pad(audio, (0, original_length - len(audio)))
     
     return audio
 

@@ -36,7 +36,10 @@ def _design_butterworth_filter(
     order: int = 4,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Design a Butterworth IIR filter.
+    Design a Butterworth IIR filter using SOS (second-order sections).
+    
+    SOS representation provides better numerical stability than
+    transfer function (ba) coefficients, especially for high-order filters.
     
     Parameters
     ----------
@@ -52,7 +55,7 @@ def _design_butterworth_filter(
     Returns
     -------
     Tuple[np.ndarray, np.ndarray]
-        Filter coefficients (b, a)
+        SOS array for use with sosfiltfilt
     """
     nyquist = sample_rate / 2
     
@@ -67,25 +70,31 @@ def _design_butterworth_filter(
     else:
         normalized_cutoff = max(0.001, min(0.999, normalized_cutoff))
     
-    b, a = signal.butter(order, normalized_cutoff, btype=filter_type)
+    # Use SOS (second-order sections) for better numerical stability
+    sos = signal.butter(order, normalized_cutoff, btype=filter_type, output='sos')
     
-    return b, a
+    return sos, None  # Return None for 'a' to maintain interface
 
 
 def _apply_filter_zerophase(
     audio: np.ndarray,
-    b: np.ndarray,
-    a: np.ndarray,
+    sos: np.ndarray,
+    a: np.ndarray = None,  # Kept for compatibility but unused
 ) -> np.ndarray:
     """
-    Apply filter with zero phase distortion using filtfilt.
+    Apply filter with zero phase distortion using sosfiltfilt.
+    
+    Uses second-order sections for better numerical stability
+    than traditional ba coefficients.
     
     Parameters
     ----------
     audio : np.ndarray
         Input audio signal
-    b, a : np.ndarray
-        Filter coefficients
+    sos : np.ndarray
+        Second-order sections representation of filter
+    a : np.ndarray
+        Unused (kept for interface compatibility)
         
     Returns
     -------
@@ -93,13 +102,13 @@ def _apply_filter_zerophase(
         Filtered audio signal
     """
     # Pad signal to reduce edge effects
-    pad_length = 3 * max(len(a), len(b))
+    pad_length = min(len(audio) // 4, 1000)  # Adaptive padding
     
-    if len(audio) <= pad_length:
-        # Signal too short, use regular filtering
-        return signal.filtfilt(b, a, audio, method='gust')
+    if len(audio) <= 2 * pad_length:
+        # Signal too short, use minimal padding
+        return signal.sosfiltfilt(sos, audio)
     
-    return signal.filtfilt(b, a, audio, padtype='odd', padlen=pad_length)
+    return signal.sosfiltfilt(sos, audio, padtype='odd', padlen=pad_length)
 
 
 def bandpass_filter(
@@ -143,8 +152,8 @@ def bandpass_filter(
     low_cutoff = max(20, min(low_cutoff, nyquist * 0.9))
     high_cutoff = max(low_cutoff + 100, min(high_cutoff, nyquist * 0.95))
     
-    # Design bandpass filter
-    b, a = _design_butterworth_filter(
+    # Design bandpass filter using SOS for numerical stability
+    sos, _ = _design_butterworth_filter(
         [low_cutoff, high_cutoff],
         sample_rate,
         filter_type='band',
@@ -152,7 +161,7 @@ def bandpass_filter(
     )
     
     # Apply zero-phase filtering
-    output = _apply_filter_zerophase(audio, b, a)
+    output = _apply_filter_zerophase(audio, sos)
     
     return output.astype(np.float32)
 
@@ -192,15 +201,15 @@ def highpass_filter(
     nyquist = sample_rate / 2
     cutoff = max(10, min(cutoff, nyquist * 0.9))
     
-    # Design highpass filter
-    b, a = _design_butterworth_filter(
+    # Design highpass filter using SOS
+    sos, _ = _design_butterworth_filter(
         cutoff,
         sample_rate,
         filter_type='high',
         order=order,
     )
     
-    output = _apply_filter_zerophase(audio, b, a)
+    output = _apply_filter_zerophase(audio, sos)
     
     return output.astype(np.float32)
 
@@ -240,15 +249,15 @@ def lowpass_filter(
     nyquist = sample_rate / 2
     cutoff = max(100, min(cutoff, nyquist * 0.95))
     
-    # Design lowpass filter
-    b, a = _design_butterworth_filter(
+    # Design lowpass filter using SOS
+    sos, _ = _design_butterworth_filter(
         cutoff,
         sample_rate,
         filter_type='low',
         order=order,
     )
     
-    output = _apply_filter_zerophase(audio, b, a)
+    output = _apply_filter_zerophase(audio, sos)
     
     return output.astype(np.float32)
 

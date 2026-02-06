@@ -29,16 +29,25 @@ class MetricsResult:
     rmse: float
     log_spectral_distance: float
     processing_time_ms: float
+    stoi: Optional[float] = None  # Short-Time Objective Intelligibility
+    pesq: Optional[float] = None  # Perceptual Evaluation of Speech Quality
     
     def to_dict(self) -> dict:
         """Convert to dictionary for display."""
-        return {
+        result = {
             "SNR (dB)": f"{self.snr_db:.2f}",
             "Segmental SNR (dB)": f"{self.segmental_snr_db:.2f}",
             "RMSE": f"{self.rmse:.6f}",
             "Log Spectral Distance": f"{self.log_spectral_distance:.4f}",
             "Processing Time (ms)": f"{self.processing_time_ms:.2f}",
         }
+        
+        if self.stoi is not None:
+            result["STOI"] = f"{self.stoi:.4f}"
+        if self.pesq is not None:
+            result["PESQ"] = f"{self.pesq:.3f}"
+            
+        return result
 
 
 def compute_snr(
@@ -391,6 +400,45 @@ def compute_pesq_if_available(
         return None
 
 
+def compute_stoi_if_available(
+    original: np.ndarray,
+    processed: np.ndarray,
+    sample_rate: int,
+) -> Optional[float]:
+    """
+    Compute STOI (Short-Time Objective Intelligibility) score if available.
+    
+    STOI is a highly reliable metric for speech intelligibility prediction.
+    It correlates well with human perception for speech-in-noise scenarios.
+    
+    Parameters
+    ----------
+    original : np.ndarray
+        Reference (clean) signal
+    processed : np.ndarray
+        Processed/degraded signal
+    sample_rate : int
+        Sample rate in Hz (typically 10kHz or higher)
+        
+    Returns
+    -------
+    float or None
+        STOI score (0-1, higher is better) or None if unavailable
+    """
+    try:
+        from pystoi import stoi
+        
+        min_len = min(len(original), len(processed))
+        # STOI works best at 10kHz or higher, but can handle other rates
+        score = stoi(original[:min_len], processed[:min_len], sample_rate, extended=False)
+        return float(score)
+        
+    except ImportError:
+        return None
+    except Exception:
+        return None
+
+
 def compute_all_metrics(
     original: np.ndarray,
     processed: np.ndarray,
@@ -427,12 +475,18 @@ def compute_all_metrics(
     rmse = compute_rmse(original, processed)
     lsd = compute_log_spectral_distance(original, processed, sample_rate)
     
+    # Try to compute perceptual metrics
+    stoi_score = compute_stoi_if_available(original, processed, sample_rate)
+    pesq_score = compute_pesq_if_available(original, processed, sample_rate)
+    
     return MetricsResult(
         snr_db=snr,
         segmental_snr_db=seg_snr,
         rmse=rmse,
         log_spectral_distance=lsd,
         processing_time_ms=processing_time_ms,
+        stoi=stoi_score,
+        pesq=pesq_score,
     )
 
 
@@ -481,6 +535,28 @@ def interpret_metrics(metrics: MetricsResult) -> dict:
         interpretations["rmse"] = "Moderate modification"
     else:
         interpretations["rmse"] = "Heavy modification"
+    
+    # STOI interpretation
+    if metrics.stoi is not None:
+        if metrics.stoi > 0.9:
+            interpretations["stoi"] = "Excellent intelligibility"
+        elif metrics.stoi > 0.75:
+            interpretations["stoi"] = "Good intelligibility"
+        elif metrics.stoi > 0.5:
+            interpretations["stoi"] = "Fair intelligibility"
+        else:
+            interpretations["stoi"] = "Poor intelligibility"
+    
+    # PESQ interpretation
+    if metrics.pesq is not None:
+        if metrics.pesq > 4.0:
+            interpretations["pesq"] = "Excellent quality"
+        elif metrics.pesq > 3.0:
+            interpretations["pesq"] = "Good quality"
+        elif metrics.pesq > 2.0:
+            interpretations["pesq"] = "Fair quality"
+        else:
+            interpretations["pesq"] = "Poor quality"
     
     # Processing time
     if metrics.processing_time_ms < 100:

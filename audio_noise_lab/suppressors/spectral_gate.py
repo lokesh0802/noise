@@ -14,10 +14,12 @@ Spectral gating works by:
 5. Reconstructing signal via inverse STFT
 
 This is a classic approach used in audio workstations and plugins.
+Uses librosa for optimized STFT/ISTFT operations.
 """
 
 import numpy as np
 from typing import Tuple, Optional
+import librosa
 
 
 def _stft(
@@ -27,7 +29,7 @@ def _stft(
     window: str = "hann",
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Compute Short-Time Fourier Transform.
+    Compute Short-Time Fourier Transform using librosa.
     
     Parameters
     ----------
@@ -45,30 +47,17 @@ def _stft(
     Tuple[np.ndarray, np.ndarray]
         Complex STFT matrix and window function
     """
-    # Create window
-    if window == "hann":
-        win = np.hanning(n_fft)
-    elif window == "hamming":
-        win = np.hamming(n_fft)
-    else:
-        win = np.ones(n_fft)
+    # Use librosa's optimized STFT
+    stft_matrix = librosa.stft(
+        signal,
+        n_fft=n_fft,
+        hop_length=hop_length,
+        window=window,
+        center=True,
+    )
     
-    # Pad signal
-    pad_length = n_fft // 2
-    signal_padded = np.pad(signal, (pad_length, pad_length), mode='reflect')
-    
-    # Compute number of frames
-    n_frames = 1 + (len(signal_padded) - n_fft) // hop_length
-    
-    # Initialize STFT matrix
-    stft_matrix = np.zeros((n_fft // 2 + 1, n_frames), dtype=np.complex128)
-    
-    # Compute STFT
-    for i in range(n_frames):
-        start = i * hop_length
-        frame = signal_padded[start:start + n_fft] * win
-        spectrum = np.fft.rfft(frame)
-        stft_matrix[:, i] = spectrum
+    # Get window for compatibility
+    win = librosa.filters.get_window(window, n_fft, fftbins=True)
     
     return stft_matrix, win
 
@@ -81,7 +70,7 @@ def _istft(
     original_length: int = None,
 ) -> np.ndarray:
     """
-    Compute Inverse Short-Time Fourier Transform.
+    Compute Inverse Short-Time Fourier Transform using librosa.
     
     Uses overlap-add method with proper normalization.
     
@@ -92,7 +81,7 @@ def _istft(
     hop_length : int
         Hop size between frames
     window : np.ndarray
-        Window function used in STFT
+        Window function used in STFT (ignored, librosa infers from stft)
     n_fft : int
         FFT size
     original_length : int
